@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestManager_Update_PreservesModelStates(t *testing.T) {
@@ -200,5 +201,71 @@ func TestManager_Update_ActiveInheritsModelStates(t *testing.T) {
 	}
 	if state.Quota.BackoffLevel != backoffLevel {
 		t.Fatalf("expected BackoffLevel to be %d, got %d", backoffLevel, state.Quota.BackoffLevel)
+	}
+}
+
+// TestManager_Update_PreservesCooldownWhenIncomingHasStaleModelStates reproduces
+// the auto-refresh race: MarkResult sets a cooldown on a model, then a stale
+// auto-refresh clone (with the same model key but no cooldown) calls Update.
+// The cooldown must survive.
+func TestManager_Update_PreservesCooldownWhenIncomingHasStaleModelStates(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+
+	model := "claude-opus-4-6-thinking"
+	cooldownUntil := time.Now().Add(10 * time.Minute)
+
+	// Step 1: Register auth with a cooldown on the model (simulates MarkResult).
+	if _, err := m.Register(context.Background(), &Auth{
+		ID:       "auth-race",
+		Provider: "claude",
+		Status:   StatusActive,
+		ModelStates: map[string]*ModelState{
+			model: {
+				Unavailable:    true,
+				NextRetryAfter: cooldownUntil,
+				Status:         StatusError,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: cooldownUntil,
+					BackoffLevel:  2,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	// Step 2: Simulate auto-refresh Update with a stale clone that has the
+	// same model key but NO cooldown (as if cloned before the 429).
+	if _, err := m.Update(context.Background(), &Auth{
+		ID:       "auth-race",
+		Provider: "claude",
+		Status:   StatusActive,
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status: StatusActive,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+
+	updated, ok := m.GetByID("auth-race")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	state := updated.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state to be present")
+	}
+	if !state.Unavailable {
+		t.Fatalf("expected model state to remain Unavailable after stale Update")
+	}
+	if !state.NextRetryAfter.Equal(cooldownUntil) {
+		t.Fatalf("expected NextRetryAfter to be preserved, got %v want %v", state.NextRetryAfter, cooldownUntil)
+	}
+	if state.Quota.BackoffLevel != 2 {
+		t.Fatalf("expected BackoffLevel to be preserved as 2, got %d", state.Quota.BackoffLevel)
 	}
 }

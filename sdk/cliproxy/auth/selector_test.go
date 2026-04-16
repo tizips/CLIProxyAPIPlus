@@ -313,6 +313,66 @@ func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testin
 	}
 }
 
+// TestIsAuthBlockedForModel_AuthLevelCooldownCheckedWhenModelStateNotFound
+// verifies that when a specific model is requested but no matching ModelState
+// exists, the function still checks auth-level Unavailable/NextRetryAfter.
+func TestIsAuthBlockedForModel_AuthLevelCooldownCheckedWhenModelStateNotFound(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cooldownUntil := now.Add(5 * time.Minute)
+	auth := &Auth{
+		ID:             "a",
+		Unavailable:    true,
+		NextRetryAfter: cooldownUntil,
+		Quota: QuotaState{
+			Exceeded:      true,
+			NextRecoverAt: cooldownUntil,
+		},
+		// ModelStates is empty — cooldown only at auth level.
+	}
+
+	// Request a specific model — should still be blocked by auth-level cooldown.
+	blocked, reason, _ := isAuthBlockedForModel(auth, "claude-opus-4-6-thinking", now)
+	if !blocked {
+		t.Fatalf("expected auth to be blocked by auth-level cooldown when model state not found")
+	}
+	if reason != blockReasonCooldown {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonCooldown)
+	}
+}
+
+// TestIsAuthBlockedForModel_AuthLevelCooldownCheckedWhenModelStatesNonEmptyButNoMatch
+// verifies the same fallthrough when ModelStates has entries for OTHER models
+// but not the requested one.
+func TestIsAuthBlockedForModel_AuthLevelCooldownCheckedWhenModelStatesNonEmptyButNoMatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cooldownUntil := now.Add(5 * time.Minute)
+	auth := &Auth{
+		ID:             "a",
+		Unavailable:    true,
+		NextRetryAfter: cooldownUntil,
+		Quota: QuotaState{
+			Exceeded:      true,
+			NextRecoverAt: cooldownUntil,
+		},
+		ModelStates: map[string]*ModelState{
+			"other-model": {
+				Status: StatusActive,
+			},
+		},
+	}
+
+	blocked, reason, _ := isAuthBlockedForModel(auth, "claude-opus-4-6-thinking", now)
+	if !blocked {
+		t.Fatalf("expected auth to be blocked by auth-level cooldown when model not in ModelStates")
+	}
+	if reason != blockReasonCooldown {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonCooldown)
+	}
+}
 func TestFillFirstSelectorPick_ThinkingSuffixFallsBackToBaseModelState(t *testing.T) {
 	t.Parallel()
 
