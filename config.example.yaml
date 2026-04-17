@@ -96,9 +96,11 @@ max-retry-interval: 30
 disable-cooling: false
 
 # State persistence: persist runtime state (cooldowns, metrics, statistics) to PostgreSQL.
-# Requires postgres store to be enabled (PGSTORE_DSN env var).
+# Has its own DSN — independent of PGSTORE_DSN, so auth/config storage stays file-based.
 # state-store:
 #   enabled: true
+#   dsn: postgres://cliproxy:cliproxy@postgres:5432/cliproxy?sslmode=disable
+#   schema: public
 #   flush-interval: 30s
 
 # Core auth auto-refresh worker pool size (OAuth/file-based auth token refresh).

@@ -686,9 +686,9 @@ func main() {
 			}
 
 			// State persistence syncer.
-			// Uses a separate PG connection pool for isolation from the auth store.
-			if cfg.StateStore.Enabled && usePostgresStore && pgStoreDSN != "" {
-				stateStore, stateErr := state.NewPostgresStateStore(pgStoreDSN, pgStoreSchema)
+			// Independent of PGSTORE_DSN — uses its own DSN from config.
+			if cfg.StateStore.Enabled && cfg.StateStore.DSN != "" {
+				stateStore, stateErr := state.NewPostgresStateStore(cfg.StateStore.DSN, cfg.StateStore.Schema)
 				if stateErr != nil {
 					log.Errorf("failed to initialize state store: %v", stateErr)
 				} else {
@@ -716,7 +716,6 @@ func main() {
 					if initErr := stateStore.Init(initCtx); initErr != nil {
 						log.Errorf("state store: failed to init tables: %v", initErr)
 					} else {
-						// LoadState logs warnings internally and never fails startup.
 						syncer.LoadState(initCtx)
 						syncer.Start()
 						defer syncer.Stop()

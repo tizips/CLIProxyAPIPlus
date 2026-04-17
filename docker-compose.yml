@@ -14,8 +14,8 @@ services:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
-      PGSTORE_DSN: postgres://cliproxy:cliproxy@postgres:5432/cliproxy?sslmode=disable
-      # PGSTORE_SCHEMA: public
+      # Uncomment to also use PostgreSQL for auth/config storage:
+      # PGSTORE_DSN: postgres://cliproxy:cliproxy@postgres:5432/cliproxy?sslmode=disable
     ports:
       - "8317:8317"
       - "8085:8085"

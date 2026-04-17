@@ -165,6 +165,14 @@ type StateStoreConfig struct {
 	// Enabled toggles state persistence. When false, runtime state is only in-memory.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
+	// DSN is the PostgreSQL connection string for state persistence.
+	// Independent of PGSTORE_DSN — state persistence can be enabled without
+	// switching auth/config storage to PostgreSQL.
+	DSN string `yaml:"dsn" json:"-"`
+
+	// Schema is the PostgreSQL schema name (optional, defaults to public).
+	Schema string `yaml:"schema" json:"-"`
+
 	// FlushInterval is the interval between periodic state flushes (e.g., "30s", "1m").
 	// Default: 30s.
 	FlushInterval string `yaml:"flush-interval" json:"flush-interval"`
