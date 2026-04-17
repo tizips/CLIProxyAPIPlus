@@ -484,7 +484,10 @@ func formatHour(hour int) string {
 	return fmt.Sprintf("%02d", hour)
 }
 
-// ExportDailyStats returns a snapshot of per-day aggregated statistics.
+// ExportDailyStats returns a snapshot of per-day aggregated statistics
+// along with the exact global counters. Per-day success/failure breakdown
+// is not tracked separately, so only the global totals are authoritative.
+// Note: requestsByHour data is not persisted and will be empty after restore.
 func (s *RequestStatistics) ExportDailyStats() []state.RequestStatsEntry {
 	if s == nil {
 		return nil
@@ -492,7 +495,7 @@ func (s *RequestStatistics) ExportDailyStats() []state.RequestStatsEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if len(s.requestsByDay) == 0 {
+	if len(s.requestsByDay) == 0 && s.totalRequests == 0 {
 		return nil
 	}
 
@@ -505,30 +508,32 @@ func (s *RequestStatistics) ExportDailyStats() []state.RequestStatsEntry {
 		days[d] = struct{}{}
 	}
 
-	// Use global success rate to estimate per-day breakdown
-	var globalSuccessRate float64
-	if s.totalRequests > 0 {
-		globalSuccessRate = float64(s.successCount) / float64(s.totalRequests)
-	}
+	entries := make([]state.RequestStatsEntry, 0, len(days)+1)
 
-	entries := make([]state.RequestStatsEntry, 0, len(days))
+	// First entry stores the authoritative global counters with a sentinel date.
+	entries = append(entries, state.RequestStatsEntry{
+		StatDate:      "_global",
+		TotalRequests: s.totalRequests,
+		SuccessCount:  s.successCount,
+		FailureCount:  s.failureCount,
+		TotalTokens:   s.totalTokens,
+	})
+
 	for d := range days {
-		reqs := s.requestsByDay[d]
-		tokens := s.tokensByDay[d]
-		successCount := int64(float64(reqs) * globalSuccessRate)
-		failureCount := reqs - successCount
 		entries = append(entries, state.RequestStatsEntry{
 			StatDate:      d,
-			TotalRequests: reqs,
-			SuccessCount:  successCount,
-			FailureCount:  failureCount,
-			TotalTokens:   tokens,
+			TotalRequests: s.requestsByDay[d],
+			TotalTokens:   s.tokensByDay[d],
 		})
 	}
 	return entries
 }
 
 // ImportDailyStats restores per-day statistics from persisted entries.
+// Global counters are restored from the "_global" sentinel entry if present,
+// otherwise they are summed from per-day entries.
+// Note: requestsByHour is not restored — hourly view will be empty until
+// new requests are recorded.
 func (s *RequestStatistics) ImportDailyStats(entries []state.RequestStatsEntry) {
 	if s == nil {
 		return
@@ -536,17 +541,28 @@ func (s *RequestStatistics) ImportDailyStats(entries []state.RequestStatsEntry) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var totalReqs, totalSuccess, totalFailure, totalTokens int64
+	var hasGlobal bool
 	for _, e := range entries {
+		if e.StatDate == "_global" {
+			s.totalRequests = e.TotalRequests
+			s.successCount = e.SuccessCount
+			s.failureCount = e.FailureCount
+			s.totalTokens = e.TotalTokens
+			hasGlobal = true
+			continue
+		}
 		s.requestsByDay[e.StatDate] = e.TotalRequests
 		s.tokensByDay[e.StatDate] = e.TotalTokens
-		totalReqs += e.TotalRequests
-		totalSuccess += e.SuccessCount
-		totalFailure += e.FailureCount
-		totalTokens += e.TotalTokens
 	}
-	s.totalRequests = totalReqs
-	s.successCount = totalSuccess
-	s.failureCount = totalFailure
-	s.totalTokens = totalTokens
+
+	// Fallback: if no global entry, sum from per-day entries
+	if !hasGlobal {
+		var totalReqs, totalTokens int64
+		for _, e := range entries {
+			totalReqs += e.TotalRequests
+			totalTokens += e.TotalTokens
+		}
+		s.totalRequests = totalReqs
+		s.totalTokens = totalTokens
+	}
 }
