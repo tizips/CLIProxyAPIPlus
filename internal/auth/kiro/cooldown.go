@@ -113,18 +113,21 @@ func CalculateCooldownUntilNextDay() time.Duration {
 	return time.Until(nextDay)
 }
 
-// ExportCooldowns returns a snapshot of all cooldown entries (including expired).
+// ExportCooldowns returns a snapshot of active (non-expired) cooldown entries.
 func (cm *CooldownManager) ExportCooldowns() []state.CooldownEntry {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
+	now := time.Now()
 	entries := make([]state.CooldownEntry, 0, len(cm.cooldowns))
 	for tokenKey, expiresAt := range cm.cooldowns {
-		entries = append(entries, state.CooldownEntry{
-			TokenKey:  tokenKey,
-			ExpiresAt: expiresAt,
-			Reason:    cm.reasons[tokenKey],
-		})
+		if expiresAt.After(now) {
+			entries = append(entries, state.CooldownEntry{
+				TokenKey:  tokenKey,
+				ExpiresAt: expiresAt,
+				Reason:    cm.reasons[tokenKey],
+			})
+		}
 	}
 	return entries
 }

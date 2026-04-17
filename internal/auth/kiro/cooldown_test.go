@@ -248,8 +248,9 @@ func TestCooldownManager_ExportImport(t *testing.T) {
 	cm.SetCooldown("token-expired", -1*time.Second, CooldownReasonQuotaExhausted)
 
 	entries := cm.ExportCooldowns()
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 exported entries, got %d", len(entries))
+	// expired entry should be filtered out during export
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 exported entries (expired filtered), got %d", len(entries))
 	}
 
 	cm2 := NewCooldownManager()
