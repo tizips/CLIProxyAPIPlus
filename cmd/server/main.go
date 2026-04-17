@@ -816,7 +816,6 @@ func main() {
 					}
 
 					initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer initCancel()
 					if initErr := stateStore.Init(initCtx); initErr != nil {
 						log.Errorf("state store: failed to init tables: %v", initErr)
 						syncer = nil // prevent wiring below
@@ -825,6 +824,7 @@ func main() {
 						syncer.Start()
 						defer syncer.Stop()
 					}
+					initCancel()
 				}
 			}
 

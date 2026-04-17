@@ -483,62 +483,74 @@ func formatHour(hour int) string {
 	return fmt.Sprintf("%02d", hour)
 }
 
-// TrimSnapshot removes data older than the given number of days from the snapshot.
+// TrimSnapshot returns a new snapshot with data older than retentionDays removed.
 // Global counters are recalculated from the remaining data.
+// The input snapshot is not modified.
 func TrimSnapshot(snap StatisticsSnapshot, retentionDays int) StatisticsSnapshot {
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 	cutoffStr := cutoff.Format("2006-01-02")
 
-	// Trim per-day maps
-	for day := range snap.RequestsByDay {
-		if day < cutoffStr {
-			delete(snap.RequestsByDay, day)
-		}
-	}
-	for day := range snap.TokensByDay {
-		if day < cutoffStr {
-			delete(snap.TokensByDay, day)
-		}
+	result := StatisticsSnapshot{
+		RequestsByDay:  make(map[string]int64),
+		RequestsByHour: make(map[string]int64),
+		TokensByDay:    make(map[string]int64),
+		TokensByHour:   make(map[string]int64),
+		APIs:           make(map[string]APISnapshot, len(snap.APIs)),
 	}
 
-	// Trim per-API/model request details and recalculate counters
+	// Copy per-day maps, filtering old entries
+	for day, v := range snap.RequestsByDay {
+		if day >= cutoffStr {
+			result.RequestsByDay[day] = v
+		}
+	}
+	for day, v := range snap.TokensByDay {
+		if day >= cutoffStr {
+			result.TokensByDay[day] = v
+		}
+	}
+	// Hourly maps are cumulative — clear them since they can't be accurately
+	// trimmed without per-day-per-hour tracking. They'll rebuild from new requests.
+
+	// Filter per-API/model request details and recalculate counters
 	var totalReqs, successCount, failureCount, totalTokens int64
 	for apiKey, apiSnap := range snap.APIs {
-		var apiReqs, apiTokens int64
+		newAPI := APISnapshot{
+			Models: make(map[string]ModelSnapshot, len(apiSnap.Models)),
+		}
 		for modelName, modelSnap := range apiSnap.Models {
-			filtered := modelSnap.Details[:0]
+			var filtered []RequestDetail
 			for _, d := range modelSnap.Details {
 				if d.Timestamp.After(cutoff) {
 					filtered = append(filtered, d)
 				}
 			}
-			modelSnap.Details = filtered
 
-			// Recalculate model counters from remaining details
-			modelSnap.TotalRequests = int64(len(filtered))
-			modelSnap.TotalTokens = 0
+			var modelTokens int64
 			for _, d := range filtered {
-				modelSnap.TotalTokens += d.Tokens.TotalTokens
+				modelTokens += d.Tokens.TotalTokens
 				if d.Failed {
 					failureCount++
 				} else {
 					successCount++
 				}
 			}
-			totalReqs += modelSnap.TotalRequests
-			totalTokens += modelSnap.TotalTokens
-			apiReqs += modelSnap.TotalRequests
-			apiTokens += modelSnap.TotalTokens
-			apiSnap.Models[modelName] = modelSnap
+			newAPI.Models[modelName] = ModelSnapshot{
+				TotalRequests: int64(len(filtered)),
+				TotalTokens:   modelTokens,
+				Details:       filtered,
+			}
+			totalReqs += int64(len(filtered))
+			totalTokens += modelTokens
+			newAPI.TotalRequests += int64(len(filtered))
+			newAPI.TotalTokens += modelTokens
 		}
-		apiSnap.TotalRequests = apiReqs
-		apiSnap.TotalTokens = apiTokens
-		snap.APIs[apiKey] = apiSnap
+		result.APIs[apiKey] = newAPI
 	}
 
-	snap.TotalRequests = totalReqs
-	snap.SuccessCount = successCount
-	snap.FailureCount = failureCount
-	snap.TotalTokens = totalTokens
-	return snap
+	result.TotalRequests = totalReqs
+	result.SuccessCount = successCount
+	result.FailureCount = failureCount
+	result.TotalTokens = totalTokens
+	return result
 }

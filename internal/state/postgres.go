@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -255,7 +256,7 @@ func (s *PostgresStateStore) LoadUsageSnapshot(ctx context.Context) ([]byte, err
 		s.tableName("runtime_usage_snapshot"),
 	)).Scan(&data)
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("state store: load usage snapshot: %w", err)
@@ -287,7 +288,7 @@ func (s *PostgresStateStore) LoadAuthCooldowns(ctx context.Context) ([]byte, err
 		s.tableName("runtime_auth_cooldowns"),
 	)).Scan(&data)
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("state store: load auth cooldowns: %w", err)
