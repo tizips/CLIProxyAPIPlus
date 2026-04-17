@@ -391,14 +391,18 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 				reg.InfoByProvider[provider] = cloneModelInfo(model)
 			}
 			reg.LastUpdated = now
-			// Re-registering an existing client/model binding starts a fresh registry
-			// snapshot for that binding. Cooldown and suspension are transient
-			// scheduling state and must not survive this reconciliation step.
+			// Preserve active cooldown/suspension state during re-registration.
+			// Only clear if the cooldown has already expired.
 			if reg.QuotaExceededClients != nil {
-				delete(reg.QuotaExceededClients, clientID)
+				if quotaTime, hasQuota := reg.QuotaExceededClients[clientID]; hasQuota {
+					if quotaTime == nil || quotaTime.Before(now) {
+						delete(reg.QuotaExceededClients, clientID)
+					}
+				}
 			}
 			if reg.SuspendedClients != nil {
-				delete(reg.SuspendedClients, clientID)
+				// SuspendedClients has no expiry — preserve during re-registration.
+				// Suspension is cleared by the conductor when the model becomes available.
 			}
 			if providerChanged && provider != "" {
 				if _, newlyAdded := addedSet[id]; newlyAdded {

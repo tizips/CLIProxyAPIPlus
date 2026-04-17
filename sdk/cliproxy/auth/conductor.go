@@ -301,6 +301,11 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if modelStateIsClean(state) {
 				continue
 			}
+			// Preserve model state if cooldown is still active (NextRetryAfter in the future).
+			// This prevents periodic client reloads from clearing valid cooldown/quota state.
+			if state.NextRetryAfter.After(now) || (state.Quota.Exceeded && state.Quota.NextRecoverAt.After(now)) {
+				continue
+			}
 			resetModelState(state, now)
 			changed = true
 		}
