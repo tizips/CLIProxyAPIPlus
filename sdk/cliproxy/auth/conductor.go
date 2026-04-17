@@ -253,10 +253,9 @@ func (m *Manager) RefreshSchedulerEntry(authID string) {
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
-// Supported models are reset to a clean state because re-registration already
-// cleared the registry-side cooldown/suspension snapshot. ModelStates for
-// models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// Models with active cooldowns (NextRetryAfter in the future or active quota
+// recovery) are preserved. Only expired cooldown states are reset to clean.
+// ModelStates for models no longer present in the registry are pruned entirely.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -307,6 +306,8 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				continue
 			}
 			resetModelState(state, now)
+			// Clear registry-side suspension since cooldown has expired.
+			registry.GetGlobalRegistry().ResumeClientModel(authID, modelKey)
 			changed = true
 		}
 		if len(auth.ModelStates) == 0 {

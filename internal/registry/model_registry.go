@@ -392,18 +392,16 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 			}
 			reg.LastUpdated = now
 			// Preserve active cooldown/suspension state during re-registration.
-			// Only clear if the cooldown has already expired.
+			// Only clear quota state if the cooldown window has elapsed.
 			if reg.QuotaExceededClients != nil {
 				if quotaTime, hasQuota := reg.QuotaExceededClients[clientID]; hasQuota {
-					if quotaTime == nil || quotaTime.Before(now) {
+					if quotaTime == nil || now.Sub(*quotaTime) >= modelQuotaExceededWindow {
 						delete(reg.QuotaExceededClients, clientID)
 					}
 				}
 			}
-			if reg.SuspendedClients != nil {
-				// SuspendedClients has no expiry — preserve during re-registration.
-				// Suspension is cleared by the conductor when the model becomes available.
-			}
+			// SuspendedClients is preserved during re-registration.
+			// Cleared by the conductor via ResumeClientModel when the model recovers.
 			if providerChanged && provider != "" {
 				if _, newlyAdded := addedSet[id]; newlyAdded {
 					continue
