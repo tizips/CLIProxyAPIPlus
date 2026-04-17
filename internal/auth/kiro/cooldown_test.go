@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/state"
 )
 
 func TestNewCooldownManager(t *testing.T) {
@@ -236,5 +238,61 @@ func TestSetCooldown_OverwritesPrevious(t *testing.T) {
 	remaining := cm.GetRemainingCooldown("token1")
 	if remaining > 1*time.Minute {
 		t.Errorf("expected remaining <= 1 minute, got %v", remaining)
+	}
+}
+
+func TestCooldownManager_ExportImport(t *testing.T) {
+	cm := NewCooldownManager()
+	cm.SetCooldown("token-a", 10*time.Minute, CooldownReason429)
+	cm.SetCooldown("token-b", 24*time.Hour, CooldownReasonSuspended)
+	cm.SetCooldown("token-expired", -1*time.Second, CooldownReasonQuotaExhausted)
+
+	entries := cm.ExportCooldowns()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 exported entries, got %d", len(entries))
+	}
+
+	cm2 := NewCooldownManager()
+	cm2.ImportCooldowns(entries)
+
+	if !cm2.IsInCooldown("token-a") {
+		t.Error("token-a should be in cooldown after import")
+	}
+	if !cm2.IsInCooldown("token-b") {
+		t.Error("token-b should be in cooldown after import")
+	}
+	if cm2.IsInCooldown("token-expired") {
+		t.Error("token-expired should NOT be in cooldown after import (expired)")
+	}
+	if cm2.GetCooldownReason("token-a") != CooldownReason429 {
+		t.Errorf("expected reason %s, got %s", CooldownReason429, cm2.GetCooldownReason("token-a"))
+	}
+}
+
+func TestCooldownManager_ExportEmpty(t *testing.T) {
+	cm := NewCooldownManager()
+	entries := cm.ExportCooldowns()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries from empty manager, got %d", len(entries))
+	}
+}
+
+func TestCooldownManager_ImportEmpty(t *testing.T) {
+	cm := NewCooldownManager()
+	cm.SetCooldown("existing", 1*time.Hour, CooldownReason429)
+	cm.ImportCooldowns(nil)
+	if !cm.IsInCooldown("existing") {
+		t.Error("existing cooldown should survive nil import")
+	}
+}
+
+func TestCooldownManager_ExportReturnsStateCooldownEntry(t *testing.T) {
+	cm := NewCooldownManager()
+	cm.SetCooldown("tok", 5*time.Minute, CooldownReason429)
+	entries := cm.ExportCooldowns()
+	// Verify type is state.CooldownEntry
+	var _ []state.CooldownEntry = entries
+	if entries[0].TokenKey != "tok" {
+		t.Errorf("expected token key 'tok', got %s", entries[0].TokenKey)
 	}
 }

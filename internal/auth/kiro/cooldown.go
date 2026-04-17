@@ -3,6 +3,8 @@ package kiro
 import (
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/state"
 )
 
 const (
@@ -109,4 +111,35 @@ func CalculateCooldownUntilNextDay() time.Duration {
 	now := time.Now()
 	nextDay := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	return time.Until(nextDay)
+}
+
+// ExportCooldowns returns a snapshot of all cooldown entries (including expired).
+func (cm *CooldownManager) ExportCooldowns() []state.CooldownEntry {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	entries := make([]state.CooldownEntry, 0, len(cm.cooldowns))
+	for tokenKey, expiresAt := range cm.cooldowns {
+		entries = append(entries, state.CooldownEntry{
+			TokenKey:  tokenKey,
+			ExpiresAt: expiresAt,
+			Reason:    cm.reasons[tokenKey],
+		})
+	}
+	return entries
+}
+
+// ImportCooldowns restores cooldown state from persisted entries.
+// Expired entries are automatically filtered out.
+func (cm *CooldownManager) ImportCooldowns(entries []state.CooldownEntry) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	now := time.Now()
+	for _, e := range entries {
+		if e.ExpiresAt.After(now) {
+			cm.cooldowns[e.TokenKey] = e.ExpiresAt
+			cm.reasons[e.TokenKey] = e.Reason
+		}
+	}
 }
