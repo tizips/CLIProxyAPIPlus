@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/state"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -481,4 +482,71 @@ func formatHour(hour int) string {
 	}
 	hour = hour % 24
 	return fmt.Sprintf("%02d", hour)
+}
+
+// ExportDailyStats returns a snapshot of per-day aggregated statistics.
+func (s *RequestStatistics) ExportDailyStats() []state.RequestStatsEntry {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.requestsByDay) == 0 {
+		return nil
+	}
+
+	// Collect all days
+	days := make(map[string]struct{})
+	for d := range s.requestsByDay {
+		days[d] = struct{}{}
+	}
+	for d := range s.tokensByDay {
+		days[d] = struct{}{}
+	}
+
+	// Use global success rate to estimate per-day breakdown
+	var globalSuccessRate float64
+	if s.totalRequests > 0 {
+		globalSuccessRate = float64(s.successCount) / float64(s.totalRequests)
+	}
+
+	entries := make([]state.RequestStatsEntry, 0, len(days))
+	for d := range days {
+		reqs := s.requestsByDay[d]
+		tokens := s.tokensByDay[d]
+		successCount := int64(float64(reqs) * globalSuccessRate)
+		failureCount := reqs - successCount
+		entries = append(entries, state.RequestStatsEntry{
+			StatDate:      d,
+			TotalRequests: reqs,
+			SuccessCount:  successCount,
+			FailureCount:  failureCount,
+			TotalTokens:   tokens,
+		})
+	}
+	return entries
+}
+
+// ImportDailyStats restores per-day statistics from persisted entries.
+func (s *RequestStatistics) ImportDailyStats(entries []state.RequestStatsEntry) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var totalReqs, totalSuccess, totalFailure, totalTokens int64
+	for _, e := range entries {
+		s.requestsByDay[e.StatDate] = e.TotalRequests
+		s.tokensByDay[e.StatDate] = e.TotalTokens
+		totalReqs += e.TotalRequests
+		totalSuccess += e.SuccessCount
+		totalFailure += e.FailureCount
+		totalTokens += e.TotalTokens
+	}
+	s.totalRequests = totalReqs
+	s.successCount = totalSuccess
+	s.failureCount = totalFailure
+	s.totalTokens = totalTokens
 }
