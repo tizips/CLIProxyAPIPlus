@@ -39,8 +39,8 @@ services:
       POSTGRES_USER: cliproxy
       POSTGRES_PASSWORD: cliproxy
       POSTGRES_DB: cliproxy
-    ports:
-      - "5432:5432"
+    # ports:
+    #   - "5432:5432"
     volumes:
       - ${CLI_PROXY_PGDATA_PATH:-./pgdata}:/var/lib/postgresql/data
     healthcheck:
