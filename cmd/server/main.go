@@ -685,7 +685,8 @@ func main() {
 				defer kiro.StopGlobalRefreshManager()
 			}
 
-			// State persistence syncer
+			// State persistence syncer.
+			// Uses a separate PG connection pool for isolation from the auth store.
 			if cfg.StateStore.Enabled && usePostgresStore && pgStoreDSN != "" {
 				stateStore, stateErr := state.NewPostgresStateStore(pgStoreDSN, pgStoreSchema)
 				if stateErr != nil {
@@ -711,15 +712,15 @@ func main() {
 					syncer.ImportStats = reqStats.ImportDailyStats
 
 					initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer initCancel()
 					if initErr := stateStore.Init(initCtx); initErr != nil {
 						log.Errorf("state store: failed to init tables: %v", initErr)
-					} else if loadErr := syncer.LoadState(initCtx); loadErr != nil {
-						log.Errorf("state store: failed to load state: %v", loadErr)
 					} else {
+						// LoadState logs warnings internally and never fails startup.
+						syncer.LoadState(initCtx)
 						syncer.Start()
 						defer syncer.Stop()
 					}
-					initCancel()
 				}
 			}
 

@@ -42,7 +42,8 @@ func NewSyncer(store StateStore, cfg SyncerConfig) *Syncer {
 }
 
 // LoadState restores persisted state into the in-memory managers.
-func (s *Syncer) LoadState(ctx context.Context) error {
+// Errors are logged as warnings but never block startup.
+func (s *Syncer) LoadState(ctx context.Context) {
 	if s.ImportCooldowns != nil {
 		entries, err := s.store.LoadCooldowns(ctx)
 		if err != nil {
@@ -72,8 +73,6 @@ func (s *Syncer) LoadState(ctx context.Context) error {
 			log.Infof("state syncer: restored %d request stats entries", len(entries))
 		}
 	}
-
-	return nil
 }
 
 // Start begins the periodic flush goroutine.
