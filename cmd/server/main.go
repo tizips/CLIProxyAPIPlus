@@ -30,9 +30,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/state"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/state"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -49,12 +49,94 @@ var (
 	DefaultConfigPath = ""
 )
 
+const (
+	stateStoreInitMaxAttempts  = 12
+	stateStoreInitInitialDelay = 1 * time.Second
+	stateStoreInitMaxDelay     = 10 * time.Second
+)
+
+type stateStoreFactory func(dsn, schema string) (state.StateStore, error)
+
+type stateStoreRetryConfig struct {
+	Attempts     int
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
+	Factory      stateStoreFactory
+	Sleep        func(time.Duration)
+}
+
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
 	buildinfo.Version = Version
 	buildinfo.Commit = Commit
 	buildinfo.BuildDate = BuildDate
+}
+
+func newStateStoreWithRetry(dsn, schema string) (state.StateStore, error) {
+	return newStateStoreWithRetryConfig(dsn, schema, stateStoreRetryConfig{
+		Attempts:     stateStoreInitMaxAttempts,
+		InitialDelay: stateStoreInitInitialDelay,
+		MaxDelay:     stateStoreInitMaxDelay,
+		Factory: func(dsn, schema string) (state.StateStore, error) {
+			return state.NewPostgresStateStore(dsn, schema)
+		},
+		Sleep: time.Sleep,
+	})
+}
+
+func newStateStoreWithRetryConfig(dsn, schema string, cfg stateStoreRetryConfig) (state.StateStore, error) {
+	if cfg.Attempts <= 0 {
+		cfg.Attempts = 1
+	}
+	if cfg.Factory == nil {
+		cfg.Factory = func(dsn, schema string) (state.StateStore, error) {
+			return state.NewPostgresStateStore(dsn, schema)
+		}
+	}
+	if cfg.Sleep == nil {
+		cfg.Sleep = time.Sleep
+	}
+	if cfg.InitialDelay <= 0 {
+		cfg.InitialDelay = stateStoreInitInitialDelay
+	}
+	if cfg.MaxDelay <= 0 {
+		cfg.MaxDelay = cfg.InitialDelay
+	}
+
+	delay := cfg.InitialDelay
+	var lastErr error
+	for attempt := 1; attempt <= cfg.Attempts; attempt++ {
+		store, err := cfg.Factory(dsn, schema)
+		if err == nil {
+			if attempt > 1 {
+				log.Infof("state store: initialized after %d attempts", attempt)
+			}
+			return store, nil
+		}
+
+		lastErr = err
+		if attempt >= cfg.Attempts {
+			break
+		}
+
+		log.WithError(err).Warnf(
+			"state store: init attempt %d/%d failed, retrying in %s",
+			attempt,
+			cfg.Attempts,
+			delay,
+		)
+		cfg.Sleep(delay)
+
+		if delay < cfg.MaxDelay {
+			delay *= 2
+			if delay > cfg.MaxDelay {
+				delay = cfg.MaxDelay
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("state store: initialize after %d attempts: %w", cfg.Attempts, lastErr)
 }
 
 // setKiroIncognitoMode sets the incognito browser mode for Kiro authentication.
@@ -694,7 +776,7 @@ func main() {
 			// Independent of PGSTORE_DSN — uses its own DSN from config.
 			var syncer *state.Syncer
 			if cfg.StateStore.Enabled && cfg.StateStore.DSN != "" {
-				stateStore, stateErr := state.NewPostgresStateStore(cfg.StateStore.DSN, cfg.StateStore.Schema)
+				stateStore, stateErr := newStateStoreWithRetry(cfg.StateStore.DSN, cfg.StateStore.Schema)
 				if stateErr != nil {
 					log.Errorf("failed to initialize state store: %v", stateErr)
 				} else {
