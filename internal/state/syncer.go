@@ -1,0 +1,132 @@
+package state
+
+import (
+	"context"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+)
+
+// SyncerConfig holds configuration for the state syncer.
+type SyncerConfig struct {
+	FlushInterval time.Duration
+}
+
+// Syncer manages loading state on startup and periodic flushing to a StateStore.
+type Syncer struct {
+	store  StateStore
+	cfg    SyncerConfig
+	stopCh chan struct{}
+	doneCh chan struct{}
+
+	// Adapter functions — set by the caller to bridge in-memory managers.
+	ExportCooldowns func() []CooldownEntry
+	ImportCooldowns func([]CooldownEntry)
+	ExportMetrics   func() []TokenMetricsEntry
+	ImportMetrics   func([]TokenMetricsEntry)
+	ExportStats     func() []RequestStatsEntry
+	ImportStats     func([]RequestStatsEntry)
+}
+
+// NewSyncer creates a new state syncer.
+func NewSyncer(store StateStore, cfg SyncerConfig) *Syncer {
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 30 * time.Second
+	}
+	return &Syncer{
+		store:  store,
+		cfg:    cfg,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
+}
+
+// LoadState restores persisted state into the in-memory managers.
+func (s *Syncer) LoadState(ctx context.Context) error {
+	if s.ImportCooldowns != nil {
+		entries, err := s.store.LoadCooldowns(ctx)
+		if err != nil {
+			log.Warnf("state syncer: failed to load cooldowns: %v", err)
+		} else if len(entries) > 0 {
+			s.ImportCooldowns(entries)
+			log.Infof("state syncer: restored %d cooldown entries", len(entries))
+		}
+	}
+
+	if s.ImportMetrics != nil {
+		entries, err := s.store.LoadTokenMetrics(ctx)
+		if err != nil {
+			log.Warnf("state syncer: failed to load token metrics: %v", err)
+		} else if len(entries) > 0 {
+			s.ImportMetrics(entries)
+			log.Infof("state syncer: restored %d token metrics entries", len(entries))
+		}
+	}
+
+	if s.ImportStats != nil {
+		entries, err := s.store.LoadRequestStats(ctx)
+		if err != nil {
+			log.Warnf("state syncer: failed to load request stats: %v", err)
+		} else if len(entries) > 0 {
+			s.ImportStats(entries)
+			log.Infof("state syncer: restored %d request stats entries", len(entries))
+		}
+	}
+
+	return nil
+}
+
+// Start begins the periodic flush goroutine.
+func (s *Syncer) Start() {
+	go s.run()
+	log.Infof("state syncer: started with flush interval %s", s.cfg.FlushInterval)
+}
+
+func (s *Syncer) run() {
+	defer close(s.doneCh)
+	ticker := time.NewTicker(s.cfg.FlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.flush()
+		case <-s.stopCh:
+			s.flush() // final flush before exit
+			return
+		}
+	}
+}
+
+// Stop signals the syncer to perform a final flush and stop.
+func (s *Syncer) Stop() {
+	close(s.stopCh)
+	<-s.doneCh
+	log.Info("state syncer: stopped")
+}
+
+func (s *Syncer) flush() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if s.ExportCooldowns != nil {
+		entries := s.ExportCooldowns()
+		if err := s.store.SaveCooldowns(ctx, entries); err != nil {
+			log.Warnf("state syncer: flush cooldowns failed: %v", err)
+		}
+	}
+
+	if s.ExportMetrics != nil {
+		entries := s.ExportMetrics()
+		if err := s.store.SaveTokenMetrics(ctx, entries); err != nil {
+			log.Warnf("state syncer: flush token metrics failed: %v", err)
+		}
+	}
+
+	if s.ExportStats != nil {
+		entries := s.ExportStats()
+		if err := s.store.SaveRequestStats(ctx, entries); err != nil {
+			log.Warnf("state syncer: flush request stats failed: %v", err)
+		}
+	}
+}
