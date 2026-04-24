@@ -1070,3 +1070,69 @@ func TestCleanJSONSchemaForAntigravity_UniqueItemsStripped(t *testing.T) {
 		t.Errorf("uniqueItems hint missing in description")
 	}
 }
+
+func TestStripPlaceholderToolArgs_EmptySchema(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"TeamDelete","input_schema":{"type":"object","properties":{},"additionalProperties":false}}]}`)
+	args := `{"reason":"cleanup resources"}`
+	result := StripPlaceholderToolArgs(originalRequest, "TeamDelete", args)
+	if strings.Contains(result, "reason") {
+		t.Errorf("expected reason to be stripped, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_PreservesOriginalProps(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object","properties":{"reason":{"type":"string"}}}}]}`)
+	args := `{"reason":"real reason"}`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if !strings.Contains(result, "reason") {
+		t.Errorf("expected reason to be preserved, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_StripUnderscore(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object","properties":{"name":{"type":"string"}}}}]}`)
+	args := `{"name":"test","_":true}`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if strings.Contains(result, `"_"`) {
+		t.Errorf("expected _ to be stripped, got: %s", result)
+	}
+	if !strings.Contains(result, "name") {
+		t.Errorf("expected name to be preserved, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_NoToolMatch(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"Other","input_schema":{"type":"object","properties":{}}}]}`)
+	args := `{"reason":"test"}`
+	result := StripPlaceholderToolArgs(originalRequest, "Unknown", args)
+	if result != args {
+		t.Errorf("expected unchanged args for unknown tool, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_BothPlaceholders(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object","properties":{}}}]}`)
+	args := `{"reason":"test","_":true}`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if strings.Contains(result, "reason") || strings.Contains(result, `"_"`) {
+		t.Errorf("expected both placeholders stripped, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_NoPropertiesField(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object"}}]}`)
+	args := `{"reason":"test"}`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if strings.Contains(result, "reason") {
+		t.Errorf("expected reason stripped when properties field absent, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_MalformedJSON(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object","properties":{}}}]}`)
+	args := `{invalid json`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if result != args {
+		t.Errorf("expected unchanged for malformed JSON, got: %s", result)
+	}
+}

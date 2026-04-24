@@ -604,6 +604,42 @@ func addEmptySchemaPlaceholder(jsonStr string) string {
 	return jsonStr
 }
 
+// StripPlaceholderToolArgs removes placeholder parameters ("reason" and "_") from
+// tool_use args that were injected by addEmptySchemaPlaceholder during request
+// schema conversion. It compares against the original tool schema to only strip
+// parameters that were not present in the original definition.
+func StripPlaceholderToolArgs(originalRequestJSON []byte, toolName string, argsRaw string) string {
+	if argsRaw == "" || argsRaw == "{}" {
+		return argsRaw
+	}
+
+	tools := gjson.GetBytes(originalRequestJSON, "tools")
+	if !tools.IsArray() {
+		return argsRaw
+	}
+
+	var originalProps gjson.Result
+	found := false
+	for _, tool := range tools.Array() {
+		if tool.Get("name").String() == toolName {
+			originalProps = tool.Get("input_schema.properties")
+			found = true
+			break
+		}
+	}
+	if !found {
+		return argsRaw
+	}
+
+	result := argsRaw
+	for _, key := range []string{"reason", "_"} {
+		if gjson.Get(result, key).Exists() && (!originalProps.Exists() || !originalProps.Get(key).Exists()) {
+			result, _ = sjson.Delete(result, key)
+		}
+	}
+	return result
+}
+
 // --- Helpers ---
 
 func findPaths(jsonStr, field string) []string {

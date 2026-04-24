@@ -294,7 +294,8 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 				appendEvent("content_block_start", string(data))
 
 				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-					data, _ = sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", fcArgsResult.Raw)
+					cleanedArgs := util.StripPlaceholderToolArgs(originalRequestRawJSON, fcName, fcArgsResult.Raw)
+					data, _ = sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", cleanedArgs)
 					appendEvent("content_block_delta", string(data))
 				}
 				params.ResponseType = 3
@@ -508,7 +509,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				toolBlock, _ = sjson.SetBytes(toolBlock, "name", name)
 
 				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
-					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(args.Raw))
+					cleanedArgs := util.StripPlaceholderToolArgs(originalRequestRawJSON, name, args.Raw)
+					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(cleanedArgs))
 				}
 
 				ensureContentArray()
