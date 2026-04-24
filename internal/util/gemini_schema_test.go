@@ -535,18 +535,34 @@ func TestCleanJSONSchemaForAntigravity_EnumHint(t *testing.T) {
 }
 
 func TestCleanJSONSchemaForAntigravity_AdditionalPropertiesHint(t *testing.T) {
-	input := `{
+	// Top-level additionalProperties: false should NOT add description hint
+	// (to avoid model confusing "description" with a parameter name)
+	topLevel := `{
 		"type": "object",
 		"properties": {
 			"name": { "type": "string" }
 		},
 		"additionalProperties": false
 	}`
+	result := CleanJSONSchemaForAntigravity(topLevel)
+	if strings.Contains(result, "No extra properties allowed") {
+		t.Errorf("Top-level additionalProperties hint should be skipped, got: %s", result)
+	}
 
-	result := CleanJSONSchemaForAntigravity(input)
-
+	// Nested additionalProperties: false SHOULD add description hint
+	nested := `{
+		"type": "object",
+		"properties": {
+			"config": {
+				"type": "object",
+				"properties": { "key": { "type": "string" } },
+				"additionalProperties": false
+			}
+		}
+	}`
+	result = CleanJSONSchemaForAntigravity(nested)
 	if !strings.Contains(result, "No extra properties allowed") {
-		t.Errorf("Expected additionalProperties hint, got: %s", result)
+		t.Errorf("Nested additionalProperties hint should exist, got: %s", result)
 	}
 }
 
@@ -1134,5 +1150,29 @@ func TestStripPlaceholderToolArgs_MalformedJSON(t *testing.T) {
 	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
 	if result != args {
 		t.Errorf("expected unchanged for malformed JSON, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_StripHallucinatedParam(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"Grep","input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}}]}`)
+	args := `{"path":"/some/dir","output_mode":"content","description":"pattern: StateStore"}`
+	result := StripPlaceholderToolArgs(originalRequest, "Grep", args)
+	if strings.Contains(result, "description") {
+		t.Errorf("expected description to be stripped, got: %s", result)
+	}
+	if strings.Contains(result, "output_mode") {
+		t.Errorf("expected output_mode to be stripped, got: %s", result)
+	}
+	if !strings.Contains(result, "path") {
+		t.Errorf("expected path to be preserved, got: %s", result)
+	}
+}
+
+func TestStripPlaceholderToolArgs_AdditionalPropsTrue(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"MyTool","input_schema":{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":true}}]}`)
+	args := `{"name":"test","extra":"value"}`
+	result := StripPlaceholderToolArgs(originalRequest, "MyTool", args)
+	if !strings.Contains(result, "extra") {
+		t.Errorf("expected extra to be preserved when additionalProperties:true, got: %s", result)
 	}
 }

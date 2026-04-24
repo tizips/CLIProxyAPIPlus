@@ -234,7 +234,11 @@ func addEnumHints(jsonStr string) string {
 func addAdditionalPropertiesHints(jsonStr string) string {
 	for _, p := range findPaths(jsonStr, "additionalProperties") {
 		if gjson.Get(jsonStr, p).Type == gjson.False {
-			jsonStr = appendHint(jsonStr, trimSuffix(p, ".additionalProperties"), "No extra properties allowed")
+			parentPath := trimSuffix(p, ".additionalProperties")
+			if parentPath == "" || parentPath == "@this" {
+				continue
+			}
+			jsonStr = appendHint(jsonStr, parentPath, "No extra properties allowed")
 		}
 	}
 	return jsonStr
@@ -604,10 +608,11 @@ func addEmptySchemaPlaceholder(jsonStr string) string {
 	return jsonStr
 }
 
-// StripPlaceholderToolArgs removes placeholder parameters ("reason" and "_") from
-// tool_use args that were injected by addEmptySchemaPlaceholder during request
-// schema conversion. It compares against the original tool schema to only strip
-// parameters that were not present in the original definition.
+// StripPlaceholderToolArgs removes parameters from tool_use args that were not
+// present in the original tool schema. This handles both placeholder parameters
+// injected by addEmptySchemaPlaceholder ("reason", "_") and any other parameters
+// hallucinated by the upstream model that would fail client-side validation
+// when the original schema has additionalProperties: false.
 func StripPlaceholderToolArgs(originalRequestJSON []byte, toolName string, argsRaw string) string {
 	if argsRaw == "" || argsRaw == "{}" {
 		return argsRaw
@@ -618,11 +623,11 @@ func StripPlaceholderToolArgs(originalRequestJSON []byte, toolName string, argsR
 		return argsRaw
 	}
 
-	var originalProps gjson.Result
+	var toolSchema gjson.Result
 	found := false
 	for _, tool := range tools.Array() {
 		if tool.Get("name").String() == toolName {
-			originalProps = tool.Get("input_schema.properties")
+			toolSchema = tool.Get("input_schema")
 			found = true
 			break
 		}
@@ -631,12 +636,28 @@ func StripPlaceholderToolArgs(originalRequestJSON []byte, toolName string, argsR
 		return argsRaw
 	}
 
-	result := argsRaw
-	for _, key := range []string{"reason", "_"} {
-		if gjson.Get(result, key).Exists() && (!originalProps.Exists() || !originalProps.Get(key).Exists()) {
-			result, _ = sjson.Delete(result, key)
-		}
+	additionalProps := toolSchema.Get("additionalProperties")
+	if additionalProps.Exists() && additionalProps.Type == gjson.True {
+		return argsRaw
 	}
+
+	originalProps := toolSchema.Get("properties")
+
+	args := gjson.Parse(argsRaw)
+	if !args.IsObject() {
+		return argsRaw
+	}
+
+	result := argsRaw
+	// Safe: args was parsed from argsRaw; ForEach iterates the parsed snapshot, not result
+	args.ForEach(func(key, _ gjson.Result) bool {
+		keyStr := key.String()
+		escapedKey := gjsonPathKeyReplacer.Replace(keyStr)
+		if !originalProps.Exists() || !originalProps.Get(escapedKey).Exists() {
+			result, _ = sjson.Delete(result, escapedKey)
+		}
+		return true
+	})
 	return result
 }
 
