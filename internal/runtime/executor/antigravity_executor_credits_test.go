@@ -18,7 +18,7 @@ import (
 
 func resetAntigravityCreditsRetryState() {
 	antigravityCreditsFailureByAuth = sync.Map{}
-	antigravityShortCooldownByAuth = sync.Map{}
+	antigravityCooldownByAuth = sync.Map{}
 	antigravityCreditsBalanceByAuth = sync.Map{}
 	antigravityCreditsHintRefreshByID = sync.Map{}
 }
