@@ -86,11 +86,16 @@ type antigravity429Decision struct {
 	reason     string
 }
 
+type antigravityCooldownState struct {
+	Until time.Time                  `json:"until"`
+	Kind  antigravity429DecisionKind `json:"kind"`
+}
+
 var (
 	randSource                        = rand.New(rand.NewSource(time.Now().UnixNano()))
 	randSourceMutex                   sync.Mutex
 	antigravityCreditsFailureByAuth   sync.Map
-	antigravityCooldownByAuth    sync.Map
+	antigravityCooldownByAuth         sync.Map
 	antigravityCreditsBalanceByAuth   sync.Map // auth.ID → antigravityCreditsBalance
 	antigravityCreditsHintRefreshByID sync.Map // auth.ID → *antigravityCreditsHintRefreshState
 	antigravityUnhealthyBaseURLs      sync.Map // baseURL → struct{}
@@ -480,7 +485,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	if inCooldown, remaining := antigravityIsInCooldown(auth, baseModel, time.Now()); inCooldown {
+	if kind, remaining, inCooldown := antigravityActiveCooldown(auth, baseModel, time.Now()); inCooldown && antigravityShouldEnforceCooldown(kind, ctx, e.cfg) {
 		log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
 		d := remaining
 		return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
@@ -599,7 +604,7 @@ attemptLoop:
 					}
 				case antigravity429DecisionShortCooldownSwitchAuth:
 					if decision.retryAfter != nil && *decision.retryAfter > 0 {
-						markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+						markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 						log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 					}
 				case antigravity429DecisionFullQuotaExhausted:
@@ -607,7 +612,7 @@ attemptLoop:
 						markAntigravityCreditsPermanentlyDisabled(auth)
 					}
 					if decision.retryAfter != nil && *decision.retryAfter > 0 {
-						markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+						markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 						log.Debugf("antigravity executor: quota exhausted cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 					}
 				}
@@ -688,7 +693,7 @@ attemptLoop:
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	if inCooldown, remaining := antigravityIsInCooldown(auth, baseModel, time.Now()); inCooldown {
+	if kind, remaining, inCooldown := antigravityActiveCooldown(auth, baseModel, time.Now()); inCooldown && antigravityShouldEnforceCooldown(kind, ctx, e.cfg) {
 		log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
 		d := remaining
 		return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
@@ -818,7 +823,7 @@ attemptLoop:
 						}
 					case antigravity429DecisionShortCooldownSwitchAuth:
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
-							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 						}
 					case antigravity429DecisionFullQuotaExhausted:
@@ -826,7 +831,7 @@ attemptLoop:
 							markAntigravityCreditsPermanentlyDisabled(auth)
 						}
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
-							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 							log.Debugf("antigravity executor: quota exhausted cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 						}
 					}
@@ -1154,7 +1159,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	ctx = context.WithValue(ctx, "alt", "")
-	if inCooldown, remaining := antigravityIsInCooldown(auth, baseModel, time.Now()); inCooldown {
+	if kind, remaining, inCooldown := antigravityActiveCooldown(auth, baseModel, time.Now()); inCooldown && antigravityShouldEnforceCooldown(kind, ctx, e.cfg) {
 		log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
 		d := remaining
 		return nil, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
@@ -1284,7 +1289,7 @@ attemptLoop:
 						}
 					case antigravity429DecisionShortCooldownSwitchAuth:
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
-							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s recorded", *decision.retryAfter, baseModel)
 						}
 					case antigravity429DecisionFullQuotaExhausted:
@@ -1292,7 +1297,7 @@ attemptLoop:
 							markAntigravityCreditsPermanentlyDisabled(auth)
 						}
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
-							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
+							markAntigravityCooldown(auth, baseModel, time.Now(), *decision.retryAfter, decision.kind)
 							log.Debugf("antigravity executor: quota exhausted cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 						}
 					}
@@ -1787,16 +1792,29 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 		return
 	}
 
-	loadReqBody := `{"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`
-	endpointURL := "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(loadReqBody))
+	userAgent := resolveLoadCodeAssistUserAgent(auth)
+	loadReqBody, errMarshal := json.Marshal(map[string]any{
+		"metadata": map[string]string{
+			"ide_type":    "ANTIGRAVITY",
+			"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
+			"ide_name":    "antigravity",
+		},
+	})
+	if errMarshal != nil {
+		log.Debugf("antigravity executor: marshal loadCodeAssist request error: %v", errMarshal)
+		return
+	}
+	baseURL := buildBaseURL(auth)
+	endpointURL := strings.TrimSuffix(baseURL, "/") + "/v1internal:loadCodeAssist"
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(loadReqBody))
 	if errReq != nil {
 		log.Debugf("antigravity executor: create loadCodeAssist request error: %v", errReq)
 		return
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", "google-api-nodejs-client/9.15.1")
+	httpReq.Header.Set("User-Agent", userAgent)
+	httpReq.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
@@ -2094,19 +2112,28 @@ func resolveHost(base string) string {
 }
 
 func resolveUserAgent(auth *cliproxyauth.Auth) string {
+	return misc.AntigravityRequestUserAgent(antigravityConfiguredUserAgent(auth))
+}
+
+func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
+	return misc.AntigravityLoadCodeAssistUserAgent(antigravityConfiguredUserAgent(auth))
+}
+
+func antigravityConfiguredUserAgent(auth *cliproxyauth.Auth) string {
+	raw := ""
 	if auth != nil {
 		if auth.Attributes != nil {
 			if ua := strings.TrimSpace(auth.Attributes["user_agent"]); ua != "" {
-				return ua
+				raw = ua
 			}
 		}
-		if auth.Metadata != nil {
+		if raw == "" && auth.Metadata != nil {
 			if ua, ok := auth.Metadata["user_agent"].(string); ok && strings.TrimSpace(ua) != "" {
-				return strings.TrimSpace(ua)
+				raw = strings.TrimSpace(ua)
 			}
 		}
 	}
-	return misc.AntigravityUserAgent()
+	return raw
 }
 
 func antigravityRetryAttempts(auth *cliproxyauth.Auth, cfg *config.Config) int {
@@ -2165,6 +2192,14 @@ func antigravityShouldRetrySoftRateLimit(statusCode int, body []byte) bool {
 	return decideAntigravity429(body).kind == antigravity429DecisionSoftRetry
 }
 
+func antigravityShouldBypassShortCooldown(ctx context.Context, cfg *config.Config) bool {
+	return cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(cfg)
+}
+
+func antigravityShouldEnforceCooldown(kind antigravity429DecisionKind, ctx context.Context, cfg *config.Config) bool {
+	return kind != antigravity429DecisionShortCooldownSwitchAuth || !antigravityShouldBypassShortCooldown(ctx, cfg)
+}
+
 func antigravitySoftRateLimitDelay(attempt int) time.Duration {
 	if attempt < 0 {
 		attempt = 0
@@ -2188,39 +2223,58 @@ func antigravityCooldownKey(auth *cliproxyauth.Auth, modelName string) string {
 	return authID + "|" + modelName + "|sc"
 }
 
-func antigravityIsInCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time) (bool, time.Duration) {
+func antigravityActiveCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time) (antigravity429DecisionKind, time.Duration, bool) {
 	key := antigravityCooldownKey(auth, modelName)
 	if key == "" {
-		return false, 0
+		return "", 0, false
 	}
 	value, ok := antigravityCooldownByAuth.Load(key)
 	if !ok {
-		return false, 0
+		return "", 0, false
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
+	state, ok := value.(antigravityCooldownState)
+	if !ok {
+		legacyUntil, legacyOK := value.(time.Time)
+		if !legacyOK || legacyUntil.IsZero() {
+			antigravityCooldownByAuth.Delete(key)
+			return "", 0, false
+		}
+		state = antigravityCooldownState{
+			Until: legacyUntil,
+			Kind:  antigravity429DecisionFullQuotaExhausted,
+		}
+		antigravityCooldownByAuth.Store(key, state)
+	}
+	if state.Until.IsZero() {
 		antigravityCooldownByAuth.Delete(key)
-		return false, 0
+		return "", 0, false
 	}
-	remaining := until.Sub(now)
+	remaining := state.Until.Sub(now)
 	if remaining <= 0 {
 		antigravityCooldownByAuth.Delete(key)
-		return false, 0
+		return "", 0, false
 	}
-	return true, remaining
+	return state.Kind, remaining, true
 }
 
-func markAntigravityCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time, duration time.Duration) {
+func markAntigravityCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time, duration time.Duration, kind antigravity429DecisionKind) {
 	key := antigravityCooldownKey(auth, modelName)
 	if key == "" {
 		return
 	}
-	antigravityCooldownByAuth.Store(key, now.Add(duration))
+	antigravityCooldownByAuth.Store(key, antigravityCooldownState{
+		Until: now.Add(duration),
+		Kind:  kind,
+	})
 	sweepAntigravityExpiredCooldowns(now)
 }
 
 func sweepAntigravityExpiredCooldowns(now time.Time) {
 	antigravityCooldownByAuth.Range(func(key, value any) bool {
+		if state, ok := value.(antigravityCooldownState); ok && !state.Until.IsZero() && now.After(state.Until) {
+			antigravityCooldownByAuth.Delete(key)
+			return true
+		}
 		if until, ok := value.(time.Time); ok && !until.IsZero() && now.After(until) {
 			antigravityCooldownByAuth.Delete(key)
 		}
